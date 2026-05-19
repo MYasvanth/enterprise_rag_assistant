@@ -1,0 +1,52 @@
+# Core RAG Frameworks
+langchain
+llama-index
+haystack-ai
+
+# LLM Providers
+openai
+anthropic
+cohere
+transformers  # For Hugging Face models
+
+# Vector Databases
+chromadb
+pinecone-client
+weaviate-client
+
+# Graph Database
+neo4j
+
+# Web Framework
+fastapi
+uvicorn
+
+# UI Frameworks
+streamlit
+gradio
+
+# Document Processing
+pypdf2
+python-docx
+markdown
+unstructured
+
+# Embeddings
+sentence-transformers
+
+# Utilities
+python-dotenv
+pydantic
+requests
+numpy
+pandas
+
+# Local LLM Hosting
+ollama  # If available via pip
+
+# Testing
+pytest
+pytest-asyncio
+
+# Logging and Monitoring
+loguru
