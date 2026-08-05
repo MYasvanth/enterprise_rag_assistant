@@ -11,6 +11,7 @@ from pathlib import Path
 from src.ingestion.ingestion import DocumentIngestionPipeline
 from src.embedding.embedding import EmbeddingManager
 from src.retrieval.retrieval import RAGPipeline
+from src.agent.agent import RAGAgent
 from src.api.api import app
 
 # Configure logging
@@ -27,6 +28,7 @@ class EnterpriseRAGAssistant:
         self.ingestion_pipeline = None
         self.embedding_manager = None
         self.rag_pipeline = None
+        self.rag_agent = None
         self.initialized = False
 
     def initialize(self,
@@ -63,6 +65,13 @@ class EnterpriseRAGAssistant:
             # Create QA chain
             self.rag_pipeline.create_qa_chain()
 
+            # Initialize agent
+            self.rag_agent = RAGAgent(
+                embedding_manager=self.embedding_manager,
+                api_key=api_key,
+            )
+            self.rag_agent.initialize()
+
             self.initialized = True
             logger.info("All components initialized successfully")
 
@@ -93,15 +102,15 @@ class EnterpriseRAGAssistant:
         logger.info(f"Successfully ingested {len(chunks)} chunks")
         return len(chunks)
 
-    def query(self, question: str):
+    def query(self, question: str, use_agent: bool = False):
         """Query the knowledge base."""
         if not self.initialized:
             raise RuntimeError("Assistant not initialized")
 
         logger.info(f"Processing query: {question}")
-        result = self.rag_pipeline.query(question)
-
-        return result
+        if use_agent:
+            return self.rag_agent.run(question)
+        return self.rag_pipeline.query(question)
 
     def save_state(self, path: str = "./data"):
         """Save the current state."""
@@ -125,8 +134,8 @@ class EnterpriseRAGAssistant:
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(description="Enterprise RAG Knowledge Assistant")
-    parser.add_argument("--mode", choices=["cli", "api", "ingest"], default="cli",
-                       help="Run mode: cli for interactive, api for web API, ingest for batch ingestion")
+    parser.add_argument("--mode", choices=["cli", "api", "ingest", "agent"], default="cli",
+                       help="Run mode: cli, api, ingest, or agent (interactive agent mode)")
     parser.add_argument("--source", help="Source path for ingestion (file or directory)")
     parser.add_argument("--query", help="Query to process")
     parser.add_argument("--embedding-provider", default="openai", help="Embedding provider")
@@ -208,6 +217,14 @@ def main():
                     for i, doc in enumerate(result['source_documents'][:3], 1):
                         print(f"{i}. {doc.page_content[:200]}...")
 
+                elif cmd.startswith("agent "):
+                    question = cmd[6:].strip()
+                    result = assistant.query(question, use_agent=True)
+                    print(f"\nAnswer: {result['answer']}\n")
+                    steps = result.get('agent_steps', [])
+                    if steps:
+                        print(f"Agent used {len(steps)} reasoning step(s).")
+
                 elif cmd == "save":
                     assistant.save_state()
                     print("State saved")
@@ -220,7 +237,7 @@ def main():
                     break
 
                 else:
-                    print("Unknown command. Use: ingest <path>, query <question>, save, load, quit")
+                    print("Unknown command. Use: ingest <path>, query <question>, agent <question>, save, load, quit")
 
             except KeyboardInterrupt:
                 break
