@@ -13,6 +13,7 @@ from pathlib import Path
 from src.ingestion.ingestion import DocumentIngestionPipeline
 from src.embedding.embedding import EmbeddingManager
 from src.retrieval.retrieval import RAGPipeline
+from src.agent.agent import RAGAgent
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +36,8 @@ if 'embedding_manager' not in st.session_state:
     st.session_state.embedding_manager = None
 if 'rag_pipeline' not in st.session_state:
     st.session_state.rag_pipeline = None
+if 'rag_agent' not in st.session_state:
+    st.session_state.rag_agent = None
 if 'documents_ingested' not in st.session_state:
     st.session_state.documents_ingested = 0
 
@@ -72,12 +75,19 @@ def initialize_assistant():
             # Create QA chain
             st.session_state.rag_pipeline.create_qa_chain()
 
+            # Initialize agent
+            st.session_state.rag_agent = RAGAgent(
+                embedding_manager=st.session_state.embedding_manager,
+                api_key=api_key,
+            )
+            st.session_state.rag_agent.initialize()
+
             st.session_state.assistant_initialized = True
-            st.success("✅ RAG Assistant initialized successfully!")
+            st.success(" RAG Assistant initialized successfully!")
             return True
 
     except Exception as e:
-        st.error(f"❌ Failed to initialize assistant: {str(e)}")
+        st.error(f" Failed to initialize assistant: {str(e)}")
         logger.error(f"Initialization error: {e}")
         return False
 
@@ -114,30 +124,34 @@ def ingest_documents(uploaded_files, chunk_size=1000, chunk_overlap=200):
                 st.success(f"✅ {uploaded_file.name}: {len(chunks)} chunks processed")
 
         except Exception as e:
-            st.error(f"❌ Error processing {uploaded_file.name}: {str(e)}")
+            st.error(f" Error processing {uploaded_file.name}: {str(e)}")
             logger.error(f"Ingestion error for {uploaded_file.name}: {e}")
 
     # Save vector store
     try:
         st.session_state.embedding_manager.save_vector_store("./data/chroma_db")
-        st.success(f"📁 Total chunks ingested: {total_chunks}")
+        st.success(f" Total chunks ingested: {total_chunks}")
         st.session_state.documents_ingested += total_chunks
     except Exception as e:
-        st.error(f"❌ Error saving vector store: {str(e)}")
+        st.error(f" Error saving vector store: {str(e)}")
 
     return total_chunks
 
-def query_assistant(question):
+def query_assistant(question, use_agent=False):
     """Query the RAG assistant."""
     if not st.session_state.assistant_initialized:
         return None
 
     try:
-        with st.spinner("Searching knowledge base..."):
-            result = st.session_state.rag_pipeline.query(question)
+        if use_agent:
+            with st.spinner("Agent reasoning over knowledge base..."):
+                result = st.session_state.rag_agent.run(question)
+        else:
+            with st.spinner("Searching knowledge base..."):
+                result = st.session_state.rag_pipeline.query(question)
         return result
     except Exception as e:
-        st.error(f"❌ Query error: {str(e)}")
+        st.error(f" Query error: {str(e)}")
         logger.error(f"Query error: {e}")
         return None
 
@@ -145,7 +159,7 @@ def main():
     """Main Streamlit application."""
 
     # Title and description
-    st.title("🧠 Enterprise RAG Knowledge Assistant")
+    st.title(" Enterprise RAG Knowledge Assistant")
     st.markdown("""
     **Intelligent Knowledge Management System**
 
@@ -236,6 +250,12 @@ def main():
     # Query section
     st.header("❓ Ask Questions")
 
+    use_agent = st.toggle(
+        " Agent Mode (multi-step reasoning)",
+        value=False,
+        help="Agent mode decomposes complex questions and validates answers using ReAct reasoning.",
+    )
+
     question = st.text_area(
         "Enter your question:",
         height=100,
@@ -244,12 +264,21 @@ def main():
     )
 
     if st.button("🔍 Search & Answer", type="primary") and question.strip():
-        result = query_assistant(question.strip())
+        result = query_assistant(question.strip(), use_agent=use_agent)
 
         if result:
             # Display answer
             st.subheader("💡 Answer")
             st.write(result['answer'])
+
+            # Display agent steps (agent mode only)
+            if use_agent and result.get('agent_steps'):
+                with st.expander(" Agent Reasoning Steps"):
+                    for i, (action, observation) in enumerate(result['agent_steps'], 1):
+                        st.markdown(f"**Step {i} — Tool:** `{action.tool}`")
+                        st.markdown(f"**Input:** {action.tool_input}")
+                        st.markdown(f"**Observation:** {str(observation)[:300]}")
+                        st.divider()
 
             # Display sources
             if result['source_documents']:
