@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from ..ingestion.ingestion import DocumentIngestionPipeline
 from ..embedding.embedding import EmbeddingManager
 from ..retrieval.retrieval import RAGPipeline
+from ..agent.agent import RAGAgent
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +35,18 @@ class HealthResponse(BaseModel):
     status: str
     vector_store_initialized: bool
     qa_chain_initialized: bool
+    agent_initialized: bool
+
+class AgentQueryResponse(BaseModel):
+    answer: str
+    source_documents: List[Dict[str, Any]]
+    agent_steps: List[Any]
 
 # Global instances (in production, use dependency injection)
 ingestion_pipeline = None
 embedding_manager = None
 rag_pipeline = None
+rag_agent = None
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
@@ -91,6 +99,14 @@ async def startup_event():
         # Create QA chain
         rag_pipeline.create_qa_chain()
 
+        # Initialize agent
+        rag_agent = RAGAgent(
+            embedding_manager=embedding_manager,
+            api_key=os.getenv("OPENAI_API_KEY"),
+            model_name=os.getenv("LLM_MODEL", "gpt-3.5-turbo"),
+        )
+        rag_agent.initialize()
+
         logger.info("All components initialized successfully")
 
     except Exception as e:
@@ -103,7 +119,8 @@ async def health_check():
     return HealthResponse(
         status="healthy",
         vector_store_initialized=embedding_manager.vector_store is not None if embedding_manager else False,
-        qa_chain_initialized=rag_pipeline.qa_chain is not None if rag_pipeline else False
+        qa_chain_initialized=rag_pipeline.qa_chain is not None if rag_pipeline else False,
+        agent_initialized=rag_agent is not None and rag_agent._executor is not None,
     )
 
 @app.post("/ingest/file", response_model=IngestionResponse)
@@ -197,6 +214,29 @@ async def query(request: QueryRequest):
 
     except Exception as e:
         logger.error(f"Error processing query: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/agent/query", response_model=AgentQueryResponse)
+async def agent_query(request: QueryRequest):
+    """Query the knowledge base using the ReAct agent."""
+    if rag_agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    try:
+        result = rag_agent.run(request.question)
+        source_docs = [
+            {"content": doc.page_content[:500], "metadata": doc.metadata}
+            for doc in result["source_documents"]
+        ]
+        return AgentQueryResponse(
+            answer=result["answer"],
+            source_documents=source_docs,
+            agent_steps=[
+                {"tool": s[0].tool, "input": s[0].tool_input, "output": s[1]}
+                for s in result["agent_steps"]
+            ],
+        )
+    except Exception as e:
+        logger.error(f"Agent query error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/documents")
