@@ -15,8 +15,10 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_community.callbacks import get_openai_callback
 
 from ..embedding.embedding import EmbeddingManager
+from ..config.settings import get_settings
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 class RAGPipeline:
     """Retrieval-Augmented Generation pipeline."""
@@ -28,7 +30,7 @@ class RAGPipeline:
                  model_name: str = "gpt-3.5-turbo"):
         self.embedding_manager = embedding_manager
         self.llm_provider = llm_provider
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or settings.OPENAI_API_KEY
         self.model_name = model_name
 
         # Initialize LLM
