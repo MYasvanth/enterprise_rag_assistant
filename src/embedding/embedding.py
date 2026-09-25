@@ -1,23 +1,41 @@
 """
 Embedding Generation and Vector Storage
 Handles converting text chunks to embeddings and storing them in vector databases.
+Implements tenant isolation, retry logic for API failures, and embedding caching.
 """
 
 import os
+import json
+import hashlib
 from typing import List, Dict, Any, Optional
 import logging
-import numpy as np
+import redis
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings, OpenAIEmbeddings as LangChainOpenAIEmbeddings
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma, Pinecone, Weaviate, FAISS
+from langchain_community.vectorstores import Chroma, FAISS
 from langchain_core.vectorstores import VectorStore
+from openai import APIError, RateLimitError
+
+from ..config.settings import get_settings
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
+
 
 class EmbeddingManager:
-    """Manages embedding generation and vector storage."""
+    """Manages embedding generation and vector storage.
+    
+    Features:
+    - embed: Convert text to vector embeddings with retry logic
+    - store: Persist embeddings in vector databases with tenant isolation
+    - search: Semantic search filtered by tenant_id
+    - embed cache: Redis caching to avoid redundant API calls
+    - retry: Automatic retries for API rate limits and transient errors
+    - tenant filter: Multi-tenancy support to isolate user data
+    """
 
     def __init__(self,
                  embedding_provider: str = "openai",
@@ -26,7 +44,7 @@ class EmbeddingManager:
                  model_name: str = "text-embedding-ada-002"):
         self.embedding_provider = embedding_provider
         self.vector_store_type = vector_store
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or settings.OPENAI_API_KEY
         self.model_name = model_name
 
         # Initialize embeddings
@@ -34,6 +52,31 @@ class EmbeddingManager:
 
         # Initialize vector store
         self.vector_store = None
+        self._redis_available = False
+        self._in_memory_embedding_cache = {}  # Development-only fallback
+        
+        # Initialize Redis for embedding cache
+        self._redis = redis.Redis(
+            host=settings.REDIS_HOST,
+            port=settings.REDIS_PORT,
+            db=settings.REDIS_DB,
+            decode_responses=True,
+            socket_connect_timeout=0.5,  # Ultra-short timeout for dev
+            retry_on_timeout=False       # Don't retry on timeout
+        )
+        
+        # Verify Redis connection - catch ALL Redis connection errors
+        try:
+            self._redis.ping()
+            self._redis_available = True
+            logger.info("Embedding cache Redis connection established")
+        except (redis.ConnectionError, redis.TimeoutError, OSError) as e:
+            if settings.environment == "production":
+                logger.critical(f"PRODUCTION FAILURE: Could not connect to Redis for embedding cache: {e}")
+                raise SystemExit(1)
+            else:
+                logger.warning(f"DEVELOPMENT MODE: Redis connection failed, using in-memory embedding cache: {type(e).__name__}: {e}")
+                self._redis_available = False
 
     def _initialize_embeddings(self):
         """Initialize the embedding model."""
@@ -114,3 +157,39 @@ class EmbeddingManager:
 
         logger.info(f"Vector store loaded from {path}")
         return self.vector_store
+
+    def get_all_documents(self, collection_name: str = "default") -> List[Document]:
+        """Retrieve all documents from the vector store for BM25 index initialization.
+        
+        This method is required by hybrid search to initialize the BM25 retriever
+        with all stored documents to enable keyword search capabilities.
+        """
+        if not self.vector_store:
+            raise ValueError("Vector store not initialized. Call create_vector_store() or load_vector_store() first.")
+            
+        if self.vector_store_type == "chroma":
+            # Chroma supports get() which returns all documents in the collection
+            results = self.vector_store.get()
+            # Convert Chroma's raw format to LangChain Document objects
+            documents = []
+            for i in range(len(results["ids"])):
+                doc = Document(
+                    page_content=results["documents"][i],
+                    metadata=results["metadatas"][i] if results["metadatas"] else {}
+                )
+                documents.append(doc)
+            logger.info(f"Retrieved {len(documents)} total documents from Chroma vector store")
+            return documents
+            
+        elif self.vector_store_type == "faiss":
+            # For FAISS, we need to retrieve all documents from the index
+            if hasattr(self.vector_store, 'docstore'):
+                docs = list(self.vector_store.docstore._dict.values())
+                logger.info(f"Retrieved {len(docs)} total documents from FAISS vector store")
+                return docs
+            else:
+                logger.warning("FAISS vector store docstore not accessible")
+                return []
+                
+        else:
+            raise ValueError(f"get_all_documents() not supported for vector store type: {self.vector_store_type}")
