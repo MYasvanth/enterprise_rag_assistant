@@ -2,8 +2,7 @@
 Base Connector Interface
 ========================
 Abstract base class that every data source connector implements.
-Part of Layer 1 - Data Sources (docs/Bits/01_layer1_data_sources.md,
-docs/Bits/LLD_01_layer1.md).
+Part of Layer 1 - Data Sources
 
 Every connector returns raw file bytes via fetch() and detects new or
 modified files via watch(), regardless of where the data lives
